@@ -17,16 +17,14 @@ import traceback
 import utils
 
 from clients import SqlServerClient, SnowflakeClient
-from configs import datacore_config, core_snowflake_config, sa_snowflake_config
-
-# Number of Snowflake rows to fetch per batch.
-# Keep this high enough for throughput, but low enough that staging inserts and
-# SQL Server merges remain manageable inside one transaction.
-BATCH_LIMIT = 50000
-
-# Intended pause between whole sync cycles if this script is later wrapped in a
-# continuous loop/service. Currently the __main__ block performs one pass.
-SLEEP_AFTER_SYNC_RUN_SECONDS = 900
+from configs import (
+    APPLY_SYNCHREC_THRESHOLD,
+    BATCH_SIZE,
+    SYNCHREC_THRESHOLD_DAYS,
+    core_snowflake_config,
+    datacore_config,
+    sa_snowflake_config,
+)
 
 # -----------------------------------
 # ------------- SYNC ----------------
@@ -49,6 +47,27 @@ def sync_table_until_empty(datacore, snowflake, sync_log_id, table_config_row):
     pk_column = table_config_row["primary_key"]
     last_synced = table_config_row["last_synced"]
     last_pk = table_config_row["last_pk"]
+
+    snowflake_schema = snowflake.run_when_available(
+        type(snowflake).get_table_schema,
+        table_name=table_name,
+    )
+
+    has_synchrec = any(
+        column["column_name"].lower() == "synchrec"
+        for column in snowflake_schema
+    )
+
+    apply_synchrec_threshold = (
+        APPLY_SYNCHREC_THRESHOLD
+        and has_synchrec
+    )
+
+    utils.log(
+        f"{schema_name}.{table_name}: "
+        f"synchrec column present={has_synchrec}, "
+        f"synchrec threshold enabled={apply_synchrec_threshold}"
+    )
 
     utils.log(f"{schema_name}.{table_name}: draining table until empty...")
 
@@ -85,7 +104,9 @@ def sync_table_until_empty(datacore, snowflake, sync_log_id, table_config_row):
                 pk_column=pk_column,
                 last_synced=last_synced,
                 last_pk=last_pk,
-                limit=BATCH_LIMIT
+                limit=BATCH_SIZE,
+                apply_synchrec_threshold=apply_synchrec_threshold,
+                synchrec_threshold_days=SYNCHREC_THRESHOLD_DAYS,
             )
 
             # No rows means the current table has caught up to Snowflake. The
