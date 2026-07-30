@@ -892,7 +892,16 @@ def format_snowflake_watermark(value):
     ) + " +0000"
 
 
-def fetch_snowflake_batch(snowflake, table_name, pk_column, last_synced, last_pk, limit=50_000):
+def fetch_snowflake_batch(
+    snowflake,
+    table_name,
+    pk_column,
+    last_synced,
+    last_pk,
+    limit,
+    apply_synchrec_threshold=False,
+    synchrec_threshold_days=30
+):
     """
     Fetch the next ordered Snowflake batch after the stored watermark.
 
@@ -907,6 +916,17 @@ def fetch_snowflake_batch(snowflake, table_name, pk_column, last_synced, last_pk
     """
     last_synced_formatted = format_snowflake_watermark(last_synced)
 
+    synchrec_predicate = ""
+
+    if apply_synchrec_threshold:
+        synchrec_predicate = f"""
+            AND _FIVETRAN_SYNCED <= DATEADD(
+                day,
+                {synchrec_threshold_days},
+                SYNCHREC
+            )
+        """
+
     sql = f"""
         SELECT *
         FROM {table_name}
@@ -914,12 +934,10 @@ def fetch_snowflake_batch(snowflake, table_name, pk_column, last_synced, last_pk
             _FIVETRAN_SYNCED > %s
             OR (
                 _FIVETRAN_SYNCED = %s
-                AND (
-                    {pk_column} > %s
-                    OR {pk_column} IS NULL
-                )
+                AND {pk_column} > %s
             )
         )
+        {synchrec_predicate}
         ORDER BY _FIVETRAN_SYNCED, {pk_column}
         LIMIT {limit};
     """
