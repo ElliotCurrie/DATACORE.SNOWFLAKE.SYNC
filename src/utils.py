@@ -1509,3 +1509,84 @@ def upsert_certificate_events_from_staging(
 
     finally:
         cur.close()
+
+
+def discover_new_offices(snowflake, datacore, schema_name):
+    """
+    Discover offices present in Snowflake but not yet known to Datacore.
+
+    Newly discovered offices are assigned to the backlog lane. Returns the
+    newly discovered office codes so the caller can create backlog queue items.
+    """
+    sf_cur = snowflake.cursor()
+    dc_cur = datacore.cursor()
+
+    try:
+        sf_cur.execute(
+            """
+            SELECT DISTINCT
+                code
+            FROM office
+            WHERE code IS NOT NULL
+            ORDER BY code;
+            """
+        )
+
+        source_offices = {
+            str(row[0]).strip()
+            for row in sf_cur.fetchall()
+            if row[0] is not None
+        }
+
+        dc_cur.execute(
+            """
+            SELECT
+                office_code
+            FROM ops.office_lane_assignment
+            WHERE schema_name = ?;
+            """,
+            (schema_name,),
+        )
+
+        known_offices = {
+            str(row[0]).strip()
+            for row in dc_cur.fetchall()
+            if row[0] is not None
+        }
+
+        new_offices = sorted(source_offices - known_offices)
+
+        if not new_offices:
+            return []
+
+        dc_cur.executemany(
+            """
+            INSERT INTO ops.office_lane_assignment (
+                schema_name,
+                office_code,
+                lane
+            )
+            VALUES (?, ?, 'backlog');
+            """,
+            [
+                (schema_name, office_code)
+                for office_code in new_offices
+            ],
+        )
+
+        datacore.commit()
+
+        log(
+            f"{schema_name}: discovered {len(new_offices):,} new office(s): "
+            f"{', '.join(new_offices)}"
+        )
+
+        return new_offices
+
+    except Exception:
+        datacore.rollback()
+        raise
+
+    finally:
+        sf_cur.close()
+        dc_cur.close()
