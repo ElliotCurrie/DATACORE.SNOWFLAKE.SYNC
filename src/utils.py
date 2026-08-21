@@ -1944,3 +1944,64 @@ def sync_table_until_empty(datacore, snowflake, sync_log_id, table_config_row):
             raise
 
     return total_rows_processed
+
+
+def reconcile_backlog_queue(sql_server, schema_name):
+    """
+    Ensure every backlog-owned office has a queue item for every table that
+    can be partitioned by office.
+
+    Existing queue items are left untouched. Tables without an office mapping
+    are excluded from backlog processing.
+    """
+    sql = """
+        SET NOCOUNT ON;
+
+        INSERT INTO ops.backlog_queue
+        (
+            schema_name,
+            office_code,
+            table_name,
+            status
+        )
+        SELECT
+            office.schema_name,
+            office.office_code,
+            config.table_name,
+            'active'
+        FROM ops.office_lane_assignment AS office
+        INNER JOIN ops.table_config AS config
+            ON config.schema_name = office.schema_name
+        WHERE
+            office.schema_name = ?
+            AND office.lane = 'backlog'
+            AND config.office_code_column IS NOT NULL
+            AND NOT EXISTS
+            (
+                SELECT 1
+                FROM ops.backlog_queue AS queue
+                WHERE
+                    queue.schema_name = office.schema_name
+                    AND queue.office_code = office.office_code
+                    AND queue.table_name = config.table_name
+            );
+
+        SELECT @@ROWCOUNT;
+    """
+
+    cur = sql_server.cursor()
+
+    try:
+        cur.execute(sql, (schema_name,))
+        queue_items_added = cur.fetchone()[0]
+
+        sql_server.commit()
+
+        return queue_items_added
+
+    except Exception:
+        sql_server.rollback()
+        raise
+
+    finally:
+        cur.close()
