@@ -9,9 +9,10 @@ Each run:
 1. checks database connectivity;
 2. discovers new offices and assigns them to the backlog lane;
 3. handles target/staging schema changes;
-4. processes each configured table in batches;
-5. records run/table status in ops sync log tables;
-6. continues past table-level failures so one bad table does not block the rest.
+4. reconciles the backlog queue;
+5. processes each configured table in batches;
+6. records run/table status in ops sync log tables;
+7. continues past table-level failures so one bad table does not block the rest.
 """
 
 import utils
@@ -82,7 +83,23 @@ def main(datacore, snowflake, sync_schema_name):
     )
 
     # -------------------------------------------------------------------------
-    # 4. START SYNC RUN
+    # 4. BACKLOG QUEUE RECONCILIATION
+    # -------------------------------------------------------------------------
+
+    utils.log(f"Reconciling backlog queue for {sync_schema_name}...")
+
+    queue_items_added = datacore.run_when_available(
+        utils.reconcile_backlog_queue,
+        schema_name=sync_schema_name,
+    )
+
+    utils.log(
+        f"Backlog queue reconciliation complete for {sync_schema_name}. "
+        f"Queue items added: {queue_items_added:,}."
+    )
+
+    # -------------------------------------------------------------------------
+    # 5. START SYNC RUN
     # -------------------------------------------------------------------------
 
     utils.log(f"Starting sync run for {sync_schema_name}...")
@@ -99,7 +116,7 @@ def main(datacore, snowflake, sync_schema_name):
 
     try:
         # ---------------------------------------------------------------------
-        # 5. LOAD TABLE CONFIGURATION
+        # 6. LOAD TABLE CONFIGURATION
         # ---------------------------------------------------------------------
 
         table_config = datacore.run_when_available(
@@ -113,7 +130,7 @@ def main(datacore, snowflake, sync_schema_name):
         )
 
         # ---------------------------------------------------------------------
-        # 6. PROCESS TABLES
+        # 7. PROCESS TABLES
         # ---------------------------------------------------------------------
 
         # Tables are deliberately processed serially for simpler locking,
@@ -159,7 +176,7 @@ def main(datacore, snowflake, sync_schema_name):
                 )
 
         # ---------------------------------------------------------------------
-        # 7. COMPLETE SYNC RUN
+        # 8. COMPLETE SYNC RUN
         # ---------------------------------------------------------------------
 
         if failed_tables:
@@ -201,7 +218,7 @@ def main(datacore, snowflake, sync_schema_name):
 
     except Exception as e:
         # ---------------------------------------------------------------------
-        # 8. CATASTROPHIC RUN FAILURE
+        # 9. CATASTROPHIC RUN FAILURE
         # ---------------------------------------------------------------------
 
         utils.log(
