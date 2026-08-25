@@ -936,7 +936,8 @@ def fetch_snowflake_batch(
     sql = f"""
         SELECT *
         FROM {table_name}
-        WHERE (
+        WHERE {pk_column} IS NOT NULL
+        AND (
             _FIVETRAN_SYNCED > %s
             OR (
                 _FIVETRAN_SYNCED = %s
